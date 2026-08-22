@@ -1,0 +1,41 @@
+#include "kiotty_usecase_dispatcher.h"
+
+namespace kiotty
+{
+    UsecaseDispatcher::UsecaseDispatcher(const UsecaseRegistry& registry, GameChannelPool& channels) :
+        _registry(registry),
+        _channels(channels)
+    {
+    }
+
+    bool UsecaseDispatcher::dispatch(const GameRequest& request)
+    {
+        IUsecase* const usecase = _registry.find(request.command);
+
+        if (usecase == nullptr)
+        {
+            return false;
+        }
+        if (usecase->requiresSession() && !request.authenticated)
+        {
+            return false;
+        }
+
+        ChannelAccess access = _channels.access(request.channel_id);
+
+        if (!access)
+        {
+            return false;
+        }
+
+        BusinessGameChannel channel = access.channel().business();
+
+        usecase->execute(request, channel);
+        return true;
+    }
+
+    void UsecaseDispatcher::onStream(const GameRequest& request)
+    {
+        dispatch(request);
+    }
+}
