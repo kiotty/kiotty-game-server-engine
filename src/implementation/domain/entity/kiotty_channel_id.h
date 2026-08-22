@@ -37,6 +37,11 @@ namespace kiotty
     {
         return !(lhs == rhs);
     }
+
+    inline bool isNull(const ChannelId& id)
+    {
+        return id.generation == 0;
+    }
 }
 
 #endif

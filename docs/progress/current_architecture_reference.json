@@ -1,0 +1,18 @@
+{
+  "design_docs": [
+    "docs/requirement.md",
+    "docs/architecture.html"
+  ],
+  "concepts": [
+    {
+      "name": "AES-256-GCM",
+      "summary": "AES 블록 암호를 CTR 로 돌려 암호화하고 GHASH 로 변조 감지 태그를 붙이는 인증 암호화 모드. Cryptor 가 쓴다.",
+      "avoid": ["AES-CBC", "AEAD"],
+      "status": "promoted",
+      "learning_doc": "docs/learning/aes_gcm.html",
+      "introduced": "2026-08-22",
+      "note": "architecture.html §6.11 은 AES256 만 적고 모드를 정하지 않았다. 저장 데이터 변조를 감지해야 해서 GCM 을 골랐다. 사용자가 학습 문서 확인 전에 구현을 지시해 2026-08-22 도입. 구현: datalayer/repository/cryptor/kiotty_aes256.* (블록), kiotty_cryptor.* (CTR+GHASH)."
+    }
+  ],
+  "unregistered": []
+}

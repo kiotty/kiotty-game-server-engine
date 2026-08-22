@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(kiotty_game_server_engine CXX)
+project(kiotty_game_server_engine C CXX)
 
 # C++11 is the floor the engine targets (docs/requirement.md). Extensions are off
 # so a GNU-only spelling cannot creep in and break the MSVC build.
@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(KIOTTY_BUILD_TESTS "Build the test targets" ON)
+option(KIOTTY_WITH_SQLITE "Build the SQLite datasource (downloads the amalgamation)" ON)
 option(KIOTTY_USE_IO_URING "Prefer io_uring over epoll on Linux when liburing is present" ON)
 
 # -----------------------------------------------------------------------------
@@ -33,6 +34,13 @@ set(KIOTTY_SOURCES
     src/implementation/domain/usecase/kiotty_usecase_registry.cpp
     src/implementation/domain/usecase/kiotty_usecase_dispatcher.cpp
     src/implementation/presentation/io_loop/kiotty_io_loop.cpp
+    src/implementation/datalayer/datasource/kiotty_in_memory_datasource.cpp
+    src/implementation/datalayer/repository/cryptor/kiotty_secure_random.cpp
+    src/implementation/datalayer/repository/cryptor/kiotty_password_hasher.cpp
+    src/implementation/datalayer/repository/cryptor/kiotty_aes256.cpp
+    src/implementation/datalayer/repository/cryptor/kiotty_cryptor.cpp
+    src/implementation/datalayer/repository/session/kiotty_session.cpp
+    src/implementation/datalayer/repository/session/kiotty_session_repository.cpp
 )
 
 set(KIOTTY_BACKEND_LIBRARIES "")
@@ -44,7 +52,7 @@ if(WIN32)
         src/implementation/presentation/socket/backend/kiotty_windows_socket.cpp
         src/implementation/presentation/event_listener/backend/kiotty_iocp_io_event_listener.cpp
     )
-    list(APPEND KIOTTY_BACKEND_LIBRARIES ws2_32)
+    list(APPEND KIOTTY_BACKEND_LIBRARIES ws2_32 bcrypt)
 
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     list(APPEND KIOTTY_SOURCES
@@ -75,6 +83,66 @@ else()
 endif()
 
 message(STATUS "kiotty: IO backend = ${KIOTTY_BACKEND_NAME}")
+
+# -----------------------------------------------------------------------------
+# Third-party sources the datalayer depends on. Both are fetched, not vendored:
+# the reference Argon2 has no CMake build of its own, so its C files are listed
+# here; the SQLite amalgamation is one C file.
+# -----------------------------------------------------------------------------
+
+include(FetchContent)
+
+# URL downloads: stamp extracted files with the extraction time so a changed
+# archive triggers a rebuild. Older CMake has no such policy and keeps working.
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
+FetchContent_Declare(
+    argon2
+    GIT_REPOSITORY https://github.com/P-H-C/phc-winner-argon2.git
+    GIT_TAG        20190702   # pinned: the last tagged release
+)
+FetchContent_MakeAvailable(argon2)
+
+add_library(kiotty_argon2 STATIC
+    ${argon2_SOURCE_DIR}/src/argon2.c
+    ${argon2_SOURCE_DIR}/src/core.c
+    ${argon2_SOURCE_DIR}/src/encoding.c
+    ${argon2_SOURCE_DIR}/src/ref.c
+    ${argon2_SOURCE_DIR}/src/thread.c
+    ${argon2_SOURCE_DIR}/src/blake2/blake2b.c
+)
+target_include_directories(kiotty_argon2 SYSTEM PUBLIC ${argon2_SOURCE_DIR}/include)
+target_compile_definitions(kiotty_argon2 PRIVATE ARGON2_NO_THREADS)
+set_target_properties(kiotty_argon2 PROPERTIES C_STANDARD 99 C_EXTENSIONS OFF)
+
+list(APPEND KIOTTY_BACKEND_LIBRARIES kiotty_argon2)
+
+if(KIOTTY_WITH_SQLITE)
+    FetchContent_Declare(
+        sqlite
+        URL https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
+    )
+    FetchContent_MakeAvailable(sqlite)
+
+    add_library(kiotty_sqlite STATIC ${sqlite_SOURCE_DIR}/sqlite3.c)
+    target_include_directories(kiotty_sqlite SYSTEM PUBLIC ${sqlite_SOURCE_DIR})
+    target_compile_definitions(kiotty_sqlite PRIVATE
+        SQLITE_THREADSAFE=2
+        SQLITE_OMIT_LOAD_EXTENSION
+        SQLITE_OMIT_DEPRECATED
+    )
+    if(NOT WIN32)
+        target_link_libraries(kiotty_sqlite PUBLIC ${CMAKE_DL_LIBS})
+    endif()
+
+    list(APPEND KIOTTY_SOURCES
+        src/implementation/datalayer/datasource/kiotty_sqlite_datasource.cpp
+    )
+    list(APPEND KIOTTY_BACKEND_LIBRARIES kiotty_sqlite)
+    list(APPEND KIOTTY_BACKEND_DEFINITIONS KIOTTY_HAS_SQLITE)
+endif()
 
 add_library(kiotty STATIC ${KIOTTY_SOURCES})
 

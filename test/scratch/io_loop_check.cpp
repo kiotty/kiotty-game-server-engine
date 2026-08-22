@@ -8,6 +8,8 @@
 //   4. stop() from another thread ends run()
 
 #include <core/kiotty_block_pool.h>
+#include <datalayer/repository/cryptor/kiotty_secure_random.h>
+#include <datalayer/repository/session/kiotty_session_repository.h>
 #include <domain/channel/kiotty_channel_binder.h>
 #include <domain/channel/kiotty_game_channel_pool.h>
 #include <domain/codec/kiotty_packet_codec.h>
@@ -35,6 +37,12 @@ using namespace kiotty;
 
 namespace
 {
+    struct DropOrphans : kiotty::ISessionPolicy
+    {
+        uint32_t orphanLifetimeMs(const kiotty::Session&) const override { return 0; }
+        bool     replacesPreviousLogin(const kiotty::AccountId&) const override { return true; }
+    };
+
     int g_failures = 0;
 
     void check(bool condition, const char* what)
@@ -337,7 +345,10 @@ int main()
 
     GameChannelPool    channels(MAX_CONNECTIONS);
     EchoListener       echo(pool, channels);
-    ChannelPoolBinder  pool_binder(channels, echo);
+    DropOrphans        policy;
+    SecureRandom       random;
+    SessionRepository  sessions(channels, policy, random, MAX_CONNECTIONS);
+    ChannelPoolBinder  pool_binder(channels, sessions, echo);
     CountingBinder     binder(pool_binder);
     DefaultPacketCodec codec;
     ConnectionTable    connections(MAX_CONNECTIONS, pool, 8, binder, codec);

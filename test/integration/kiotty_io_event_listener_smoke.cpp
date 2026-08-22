@@ -15,6 +15,8 @@
 // Built against whichever backend the platform selects.
 
 #include <core/kiotty_block_pool.h>
+#include <datalayer/repository/cryptor/kiotty_secure_random.h>
+#include <datalayer/repository/session/kiotty_session_repository.h>
 #include <domain/channel/kiotty_channel_binder.h>
 #include <domain/channel/kiotty_game_channel_pool.h>
 #include <domain/codec/kiotty_packet_codec.h>
@@ -79,6 +81,12 @@ namespace
     struct UnusedRequests : StreamListener<GameRequest>
     {
         void onStream(const GameRequest&) override {}
+    };
+
+    struct DropOrphans : ISessionPolicy
+    {
+        uint32_t orphanLifetimeMs(const Session&) const override { return 0; }
+        bool     replacesPreviousLogin(const AccountId&) const override { return true; }
     };
 
     IOMultiEventListener* g_listener   = nullptr;
@@ -451,7 +459,10 @@ int main()
     BlockPool          pool(defaultBlockClasses(), defaultBlockClassCount());
     GameChannelPool    channels(1);
     UnusedRequests     requests;
-    ChannelPoolBinder  binder(channels, requests);
+    DropOrphans        policy;
+    SecureRandom       random;
+    SessionRepository  sessions(channels, policy, random, 1);
+    ChannelPoolBinder  binder(channels, sessions, requests);
     DefaultPacketCodec codec;
     ConnectionTable    connections(1, pool, 8, binder, codec);
     Endpoint           endpoint("127.0.0.1", TEST_PORT, 16, connections);

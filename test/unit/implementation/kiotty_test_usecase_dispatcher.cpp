@@ -17,6 +17,7 @@
 #include <domain/usecase/kiotty_usecase_registry.h>
 
 #include "support/kiotty_test_channel_listeners.h"
+#include "support/kiotty_test_session.h"
 
 #include <gtest/gtest.h>
 
@@ -37,10 +38,14 @@ using kiotty::Holder;
 using kiotty::IoChannelResult;
 using kiotty::IPublicUsecase;
 using kiotty::IUsecase;
+using kiotty_test::accountOf;
 using kiotty::makeChannelId;
 using kiotty::makeConnectionInfo;
 using kiotty::UsecaseDispatcher;
+using kiotty::SessionRepository;
 using kiotty::UsecaseRegistry;
+using kiotty_test::CounterRandom;
+using kiotty_test::FixedPolicy;
 using kiotty::StreamListener;
 
 namespace
@@ -191,7 +196,10 @@ namespace
         DispatcherFixture() :
             pool(2),
             registry(makeUsecases(session, pub)),
-            dispatcher(registry, pool),
+            random(),
+            policy(),
+            sessions(pool, policy, random, 2),
+            dispatcher(registry, pool, sessions),
             live_id()
         {
             kiotty::ChannelResult created = pool.create();
@@ -208,7 +216,7 @@ namespace
             {
             case Channel::Live:     return live_id;
             case Channel::Stale:    return makeChannelId(live_id.index, live_id.generation + 1);
-            case Channel::NotFound: return makeChannelId(1, 0);   // in range, never created
+            case Channel::NotFound: return makeChannelId(1, 1);   // in range, never created
             }
             return ChannelId();
         }
@@ -217,6 +225,9 @@ namespace
         Recorder          pub;
         GameChannelPool   pool;
         UsecaseRegistry   registry;
+        CounterRandom     random;
+        FixedPolicy       policy;
+        SessionRepository sessions;
         UsecaseDispatcher dispatcher;
         ChannelId         live_id;
     };
@@ -239,9 +250,13 @@ TEST_P(Dispatch, ReturnsTrueAndRunsTheUsecaseOnlyWhenEveryGateIsOpen)
 
     GameRequest request;
     request.command        = c.command;
-    request.authenticated  = c.authenticated;
     request.channel_id     = f.idFor(c.channel);
     request.correlation_id = 77;
+
+    if (c.authenticated)
+    {
+        ASSERT_TRUE(f.sessions.open(request.channel_id, accountOf("tester")).isOk());
+    }
 
     EXPECT_EQ(c.expect_dispatched, f.dispatcher.dispatch(request));
 
@@ -388,8 +403,11 @@ TEST(UsecaseDispatcher, RequestEmittedThroughABoundChannelReachesTheUsecase)
     Recorder          pub;
     GameChannelPool   pool(2);
     UsecaseRegistry   registry(makeUsecases(session, pub));
-    UsecaseDispatcher dispatcher(registry, pool);
-    ChannelPoolBinder binder(pool, dispatcher);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 2);
+    UsecaseDispatcher dispatcher(registry, pool, sessions);
+    ChannelPoolBinder binder(pool, sessions, dispatcher);
 
     ASSERT_TRUE(static_cast<bool>(registry));
 
@@ -410,4 +428,151 @@ TEST(UsecaseDispatcher, RequestEmittedThroughABoundChannelReachesTheUsecase)
     EXPECT_EQ(bound.value().channel_id, pub.channel_id);
     ASSERT_EQ(1, io_side.calls);
     EXPECT_EQ(21u, io_side.correlation_id);
+}
+
+// -----------------------------------------------------------------------------
+// the session gate over time
+// -----------------------------------------------------------------------------
+//
+// The table above fixes the gate at one moment. These follow a session through
+// the repository's transitions and check the gate moves with it.
+
+TEST(UsecaseDispatcher, SessionOnAnotherChannelDoesNotOpenTheGate)
+{
+    DispatcherFixture f;
+
+    kiotty::ChannelResult other = f.pool.create();
+    ASSERT_TRUE(other.isOk());
+    ASSERT_TRUE(f.sessions.open(other.value().id(), accountOf("tester")).isOk());
+
+    GameRequest request;
+    request.command    = COMMAND_SESSION;
+    request.channel_id = f.live_id;
+
+    EXPECT_FALSE(f.dispatcher.dispatch(request));
+    EXPECT_EQ(0, f.session.runs);
+}
+
+TEST(UsecaseDispatcher, DetachWithZeroLifetimeClosesTheGate)
+{
+    DispatcherFixture f;
+    f.policy.orphan_lifetime_ms = 0;
+
+    ASSERT_TRUE(f.sessions.open(f.live_id, accountOf("tester")).isOk());
+
+    GameRequest request;
+    request.command    = COMMAND_SESSION;
+    request.channel_id = f.live_id;
+
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    f.sessions.detach(f.live_id);
+
+    EXPECT_FALSE(f.dispatcher.dispatch(request));
+    EXPECT_EQ(1, f.session.runs);
+}
+
+TEST(UsecaseDispatcher, OrphanedSessionDoesNotOpenTheGateUntilRebound)
+{
+    DispatcherFixture f;
+    f.policy.orphan_lifetime_ms = 1000;
+
+    kiotty::SessionResult opened = f.sessions.open(f.live_id, accountOf("tester"));
+    ASSERT_TRUE(opened.isOk());
+
+    GameRequest request;
+    request.command    = COMMAND_SESSION;
+    request.channel_id = f.live_id;
+
+    f.sessions.detach(f.live_id);
+    EXPECT_FALSE(f.dispatcher.dispatch(request));
+
+    // Reconnect on a new channel: the gate opens there and stays shut here.
+    kiotty::ChannelResult next = f.pool.create();
+    ASSERT_TRUE(next.isOk());
+    ASSERT_TRUE(f.sessions.rebind(next.value().id(), opened.value().token()).isOk());
+
+    EXPECT_FALSE(f.dispatcher.dispatch(request));
+
+    request.channel_id = next.value().id();
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+    EXPECT_EQ(1, f.session.runs);
+    EXPECT_EQ(next.value().id(), f.session.channel_id);
+}
+
+TEST(UsecaseDispatcher, CloseShutsTheGate)
+{
+    DispatcherFixture f;
+
+    kiotty::SessionResult opened = f.sessions.open(f.live_id, accountOf("tester"));
+    ASSERT_TRUE(opened.isOk());
+
+    GameRequest request;
+    request.command    = COMMAND_SESSION;
+    request.channel_id = f.live_id;
+
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    f.sessions.close(opened.value());
+
+    EXPECT_FALSE(f.dispatcher.dispatch(request));
+    EXPECT_EQ(1, f.session.runs);
+}
+
+TEST(UsecaseDispatcher, PublicUsecaseIgnoresEverySessionTransition)
+{
+    DispatcherFixture f;
+    f.policy.orphan_lifetime_ms = 1000;
+
+    GameRequest request;
+    request.command    = COMMAND_PUBLIC;
+    request.channel_id = f.live_id;
+
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    kiotty::SessionResult opened = f.sessions.open(f.live_id, accountOf("tester"));
+    ASSERT_TRUE(opened.isOk());
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    f.sessions.detach(f.live_id);
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    f.sessions.close(opened.value());
+    EXPECT_TRUE(f.dispatcher.dispatch(request));
+
+    EXPECT_EQ(4, f.pub.runs);
+}
+
+TEST(UsecaseDispatcher, DisconnectThroughTheBinderClosesTheGateForTheRecycledChannel)
+{
+    // The real sequence: bound channel, login, disconnect (binder detaches
+    // and removes), reconnect into the same slot. A request on the new
+    // channel must not inherit the old login.
+    Recorder          session;
+    Recorder          pub;
+    GameChannelPool   pool(1);
+    UsecaseRegistry   registry(makeUsecases(session, pub));
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 2);
+    UsecaseDispatcher dispatcher(registry, pool, sessions);
+    ChannelPoolBinder binder(pool, sessions, dispatcher);
+
+    policy.orphan_lifetime_ms = 1000;
+
+    IoChannelResult first = binder.onConnected(makeConnectionInfo("127.0.0.1", 1));
+    ASSERT_TRUE(first.isOk());
+    ASSERT_TRUE(sessions.open(first.value().channel_id, accountOf("tester")).isOk());
+
+    binder.onDisconnected(makeConnectionInfo("127.0.0.1", 1), first.value());
+
+    IoChannelResult second = binder.onConnected(makeConnectionInfo("127.0.0.1", 2));
+    ASSERT_TRUE(second.isOk());
+
+    GameRequest request;
+    request.command    = COMMAND_SESSION;
+    request.channel_id = second.value().channel_id;
+
+    EXPECT_TRUE(second.value().request.emit(request));
+    EXPECT_EQ(0, session.runs);
 }

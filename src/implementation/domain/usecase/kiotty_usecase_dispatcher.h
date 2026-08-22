@@ -2,6 +2,7 @@
 #define KIOTTY_DOMAIN_USECASE_USECASE_DISPATCHER_H
 
 #include <core/kiotty_stream.h>
+#include <datalayer/repository/session/kiotty_session_repository.h>
 #include <domain/channel/kiotty_game_channel_pool.h>
 #include <domain/entity/kiotty_game_request.h>
 #include <domain/usecase/kiotty_usecase.h>
@@ -12,15 +13,17 @@ namespace kiotty
     class UsecaseDispatcher : public StreamListener<GameRequest>
     {
     public:
-        UsecaseDispatcher(const UsecaseRegistry& registry, GameChannelPool& channels);
+        UsecaseDispatcher(const UsecaseRegistry& registry, GameChannelPool& channels,
+                          const SessionRepository& sessions);
 
         bool dispatch(const GameRequest& request);
 
         void onStream(const GameRequest& request) override;
 
     private:
-        const UsecaseRegistry& _registry;
-        GameChannelPool&       _channels;
+        const UsecaseRegistry&   _registry;
+        GameChannelPool&         _channels;
+        const SessionRepository& _sessions;
     };
 }
 

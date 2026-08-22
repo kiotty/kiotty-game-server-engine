@@ -34,7 +34,6 @@ namespace kiotty
             out.correlation_id = packet.header.correlation_id.get();
             out.command        = packet.header.command.get();
             out.state_sequence = packet.header.timestamp.get();
-            out.authenticated  = false;
             out.payload        = std::move(packet.payload);
             return true;
         }

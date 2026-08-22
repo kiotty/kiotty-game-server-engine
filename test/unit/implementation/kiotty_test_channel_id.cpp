@@ -113,3 +113,57 @@ TEST(ChannelId, EveryIdEqualsItself)
     EXPECT_TRUE(id == id);
     EXPECT_FALSE(id != id);
 }
+
+// -----------------------------------------------------------------------------
+// isNull
+// -----------------------------------------------------------------------------
+//
+// Generation 0 is reserved: a pool never issues it, so a default ChannelId is
+// the "no channel" value. Only the generation decides; the index is free.
+
+namespace
+{
+    struct NullCase
+    {
+        ChannelId   id;
+        bool        expect_null;
+        const char* name;
+    };
+
+    // index (0 / non-zero / max) x generation (0 / 1 / max).
+    const NullCase kNullCases[] =
+    {
+        { makeChannelId(0, 0),       true,  "ZeroZero" },
+        { makeChannelId(5, 0),       true,  "IndexOnlyGenerationZero" },
+        { makeChannelId(kMax, 0),    true,  "MaxIndexGenerationZero" },
+        { makeChannelId(0, 1),       false, "IndexZeroGenerationOne" },
+        { makeChannelId(5, 1),       false, "BothNonZero" },
+        { makeChannelId(0, kMax),    false, "GenerationMax" },
+        { makeChannelId(kMax, kMax), false, "BothMax" },
+    };
+
+    std::string nullNameOf(const ::testing::TestParamInfo<NullCase>& info)
+    {
+        return info.param.name;
+    }
+
+    class NullId : public ::testing::TestWithParam<NullCase>
+    {
+    };
+}
+
+TEST_P(NullId, IsNullExactlyWhenGenerationIsZero)
+{
+    const NullCase& c = GetParam();
+
+    EXPECT_EQ(c.expect_null, kiotty::isNull(c.id));
+}
+
+INSTANTIATE_TEST_SUITE_P(AllFields, NullId, ::testing::ValuesIn(kNullCases), nullNameOf);
+
+TEST(ChannelId, DefaultConstructedIsNull)
+{
+    const ChannelId id;
+
+    EXPECT_TRUE(kiotty::isNull(id));
+}

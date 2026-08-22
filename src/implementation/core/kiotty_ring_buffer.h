@@ -45,7 +45,7 @@ namespace kiotty
         bool empty() const { return _size == 0; }
         bool full() const { return _size == _capacity; }
 
-        bool tryPush(T value)
+        bool tryPush(T&& value)
         {
             if (_size == _capacity)
             {
@@ -53,6 +53,18 @@ namespace kiotty
             }
 
             _items[indexOf(_size)] = std::move(value);
+            ++_size;
+            return true;
+        }
+
+        bool tryPush(const T& value)
+        {
+            if (_size == _capacity)
+            {
+                return false;
+            }
+
+            _items[indexOf(_size)] = value;
             ++_size;
             return true;
         }

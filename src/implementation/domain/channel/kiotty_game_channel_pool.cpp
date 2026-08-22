@@ -78,6 +78,10 @@ namespace kiotty
         slot->channel()->~GameChannel();
         slot->live = false;
         ++slot->generation;
+        if (slot->generation == 0)
+        {
+            slot->generation = 1;
+        }
         --_size;
     }
 

@@ -82,7 +82,7 @@ TEST(GameChannelPool, CapacityZeroCreateIsPoolExhausted)
 TEST(GameChannelPool, CapacityZeroAccessIsNotFound)
 {
     GameChannelPool pool(0);
-    ChannelAccess   access = pool.access(makeChannelId(0, 0));
+    ChannelAccess   access = pool.access(makeChannelId(0, 1));
 
     EXPECT_FALSE(static_cast<bool>(access));
     EXPECT_EQ(ChannelCode::CHANNEL_NOT_FOUND, access.code());
@@ -92,7 +92,7 @@ TEST(GameChannelPool, CapacityZeroRemoveIsHarmless)
 {
     GameChannelPool pool(0);
 
-    pool.remove(makeChannelId(0, 0));
+    pool.remove(makeChannelId(0, 1));
     EXPECT_EQ(0u, pool.size());
 }
 
@@ -142,7 +142,7 @@ TEST_P(Capacity, FreshPoolHandsOutDistinctIndexesWithGenerationZero)
         ASSERT_LT(id.index, capacity);
         EXPECT_FALSE(seen[id.index]) << "index handed out twice";
         seen[id.index] = true;
-        EXPECT_EQ(0u, id.generation);
+        EXPECT_EQ(1u, id.generation);   // a fresh slot starts at 1; 0 is the null id
     }
 }
 
@@ -188,7 +188,7 @@ TEST_P(Capacity, AccessWithIndexAtCapacityIsNotFound)
 
     createOrFail(pool);
 
-    ChannelAccess access = pool.access(makeChannelId(static_cast<uint32_t>(capacity), 0));
+    ChannelAccess access = pool.access(makeChannelId(static_cast<uint32_t>(capacity), 1));
 
     EXPECT_FALSE(static_cast<bool>(access));
     EXPECT_EQ(ChannelCode::CHANNEL_NOT_FOUND, access.code());
@@ -202,7 +202,7 @@ TEST_P(Capacity, AccessWithMaximumIndexIsNotFound)
 
     // The largest index that can be spelled: a bound check that compared as a
     // signed value, or not at all, would read far outside the slot array.
-    ChannelAccess access = pool.access(makeChannelId(std::numeric_limits<uint32_t>::max(), 0));
+    ChannelAccess access = pool.access(makeChannelId(std::numeric_limits<uint32_t>::max(), 1));
 
     EXPECT_FALSE(static_cast<bool>(access));
     EXPECT_EQ(ChannelCode::CHANNEL_NOT_FOUND, access.code());
@@ -214,7 +214,7 @@ TEST(GameChannelPool, AccessOfASlotThatWasNeverCreatedIsNotFound)
 
     createOrFail(pool);     // occupies index 0
 
-    ChannelAccess access = pool.access(makeChannelId(3, 0));
+    ChannelAccess access = pool.access(makeChannelId(3, 1));
 
     EXPECT_FALSE(static_cast<bool>(access));
     EXPECT_EQ(ChannelCode::CHANNEL_NOT_FOUND, access.code());
@@ -316,7 +316,7 @@ TEST(GameChannelPool, GenerationKeepsGrowingAcrossRepeatedReuse)
         pool.remove(id);
         id = createOrFail(pool);
         EXPECT_EQ(0u, id.index);
-        EXPECT_EQ(cycle, id.generation);
+        EXPECT_EQ(cycle + 1, id.generation);
     }
 }
 
@@ -340,9 +340,9 @@ TEST(GameChannelPool, RemoveWithUnknownIndexDoesNothing)
     GameChannelPool pool(4);
     const ChannelId id = createOrFail(pool);
 
-    pool.remove(makeChannelId(4, 0));
-    pool.remove(makeChannelId(std::numeric_limits<uint32_t>::max(), 0));
-    pool.remove(makeChannelId(2, 0));     // in range but never created
+    pool.remove(makeChannelId(4, 1));
+    pool.remove(makeChannelId(std::numeric_limits<uint32_t>::max(), 1));
+    pool.remove(makeChannelId(2, 1));     // in range but never created
 
     EXPECT_EQ(1u, pool.size());
     EXPECT_TRUE(static_cast<bool>(pool.access(id)));
@@ -358,9 +358,9 @@ TEST(GameChannelPool, RemoveTwiceDoesNotBumpTheGenerationTwice)
 
     EXPECT_EQ(0u, pool.size());
 
-    // A second remove that went through would leave the slot at generation 2.
+    // A second remove that went through would leave the slot at generation 3.
     const ChannelId next = createOrFail(pool);
-    EXPECT_EQ(1u, next.generation);
+    EXPECT_EQ(2u, next.generation);
 }
 
 TEST(GameChannelPool, RemovingOneOfSeveralLeavesTheOthersAccessible)
@@ -457,7 +457,7 @@ TEST(GameChannelPool, FailedAccessDoesNotKeepThePoolLocked)
 {
     GameChannelPool pool(4);
 
-    ChannelAccess failed = pool.access(makeChannelId(9, 0));
+    ChannelAccess failed = pool.access(makeChannelId(9, 1));
     ASSERT_FALSE(static_cast<bool>(failed));
 
     // On a single thread the recursive mutex cannot tell a held lock from a
@@ -498,3 +498,75 @@ TEST(GameChannelPool, DestroyingAPoolWithLiveChannelsIsSafe)
 }
 
 INSTANTIATE_TEST_SUITE_P(Capacities, Capacity, ::testing::ValuesIn(kCapacities), nameOf);
+
+// -----------------------------------------------------------------------------
+// generation numbering
+// -----------------------------------------------------------------------------
+//
+// Generation 0 belongs to the null id, so a pool starts every slot at 1 and
+// nothing it hands out is ever null.
+
+TEST(GameChannelPool, FirstChannelOfANewPoolHasGenerationOne)
+{
+    GameChannelPool pool(4);
+    const ChannelId id = createOrFail(pool);
+
+    EXPECT_EQ(0u, id.index);
+    EXPECT_EQ(1u, id.generation);
+    EXPECT_FALSE(kiotty::isNull(id));
+}
+
+TEST(GameChannelPool, NoIssuedIdIsEverNull)
+{
+    GameChannelPool pool(4);
+
+    for (int cycle = 0; cycle < 3; ++cycle)
+    {
+        ChannelId ids[4];
+
+        for (size_t i = 0; i < 4; ++i)
+        {
+            SCOPED_TRACE(i);
+            ids[i] = createOrFail(pool);
+            EXPECT_FALSE(kiotty::isNull(ids[i]));
+        }
+        for (size_t i = 0; i < 4; ++i)
+        {
+            pool.remove(ids[i]);
+        }
+    }
+}
+
+TEST(GameChannelPool, RecreateAfterRemoveHasGenerationTwo)
+{
+    GameChannelPool pool(1);
+    const ChannelId first = createOrFail(pool);
+    ASSERT_EQ(1u, first.generation);
+
+    pool.remove(first);
+    const ChannelId second = createOrFail(pool);
+
+    EXPECT_EQ(first.index, second.index);
+    EXPECT_EQ(2u, second.generation);
+}
+
+TEST(GameChannelPool, AccessWithTheNullIdIsNotFound)
+{
+    GameChannelPool pool(4);
+    createOrFail(pool);   // slot 0 is live at generation 1
+
+    ChannelAccess access = pool.access(ChannelId());
+
+    EXPECT_FALSE(static_cast<bool>(access));
+}
+
+TEST(GameChannelPool, RemoveWithTheNullIdLeavesTheLiveChannelAlone)
+{
+    GameChannelPool pool(4);
+    const ChannelId id = createOrFail(pool);
+
+    pool.remove(ChannelId());
+
+    EXPECT_EQ(1u, pool.size());
+    EXPECT_TRUE(static_cast<bool>(pool.access(id)));
+}

@@ -2,9 +2,11 @@
 
 namespace kiotty
 {
-    UsecaseDispatcher::UsecaseDispatcher(const UsecaseRegistry& registry, GameChannelPool& channels) :
+    UsecaseDispatcher::UsecaseDispatcher(const UsecaseRegistry& registry, GameChannelPool& channels,
+                                         const SessionRepository& sessions) :
         _registry(registry),
-        _channels(channels)
+        _channels(channels),
+        _sessions(sessions)
     {
     }
 
@@ -16,7 +18,7 @@ namespace kiotty
         {
             return false;
         }
-        if (usecase->requiresSession() && !request.authenticated)
+        if (usecase->requiresSession() && !_sessions.find(request.channel_id).isOk())
         {
             return false;
         }

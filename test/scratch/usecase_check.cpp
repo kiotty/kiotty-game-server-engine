@@ -8,6 +8,8 @@
 //             the wire, the session gate opening.
 
 #include <core/kiotty_block_pool.h>
+#include <datalayer/repository/cryptor/kiotty_secure_random.h>
+#include <datalayer/repository/session/kiotty_session_repository.h>
 #include <domain/channel/kiotty_channel_binder.h>
 #include <domain/channel/kiotty_game_channel_pool.h>
 #include <domain/codec/kiotty_packet_codec.h>
@@ -82,8 +84,9 @@ namespace
     class PingUsecase : public IPublicUsecase
     {
     public:
-        explicit PingUsecase(BlockPool& pool) :
-            _pool(pool)
+        PingUsecase(BlockPool& pool, SessionRepository& sessions) :
+            _pool(pool),
+            _sessions(sessions)
         {
         }
 
@@ -93,6 +96,9 @@ namespace
         {
             ++g_ping_runs;
             g_last_sequence = request.state_sequence;
+            AccountId account;
+            tryMakeAccountId("scratch", account);
+            _sessions.open(request.channel_id, account);
 
             GameResponse response;
             response.correlation_id = request.correlation_id;
@@ -107,7 +113,8 @@ namespace
         }
 
     private:
-        BlockPool& _pool;
+        BlockPool&         _pool;
+        SessionRepository& _sessions;
     };
 
     class MoveUsecase : public IUsecase
@@ -136,11 +143,11 @@ namespace
         BlockPool& _pool;
     };
 
-    std::vector<Holder<IUsecase> > makeUsecases(BlockPool& pool)
+    std::vector<Holder<IUsecase> > makeUsecases(BlockPool& pool, SessionRepository& sessions)
     {
         std::vector<Holder<IUsecase> > usecases;
 
-        usecases.push_back(Holder<IUsecase>::make<PingUsecase>(pool));
+        usecases.push_back(Holder<IUsecase>::make<PingUsecase>(pool, sessions));
         usecases.push_back(Holder<IUsecase>::make<MoveUsecase>(pool));
         return usecases;
     }
@@ -185,21 +192,20 @@ namespace
     };
 
     GameRequest makeRequest(ChannelId channel_id, uint16_t command, uint32_t correlation_id,
-                            uint64_t sequence, bool authenticated)
+                            uint64_t sequence)
     {
         GameRequest request;
         request.channel_id     = channel_id;
         request.command        = command;
         request.correlation_id = correlation_id;
         request.state_sequence = sequence;
-        request.authenticated  = authenticated;
         return request;
     }
 
-    void checkDispatcherOffline(const UsecaseRegistry& registry)
+    void checkDispatcherOffline(const UsecaseRegistry& registry, GameChannelPool& channels,
+                                SessionRepository& sessions)
     {
-        GameChannelPool   channels(2);
-        UsecaseDispatcher dispatcher(registry, channels);
+        UsecaseDispatcher dispatcher(registry, channels, sessions);
 
         ChannelResult created = channels.create();
         check(created.isOk(), "a channel came out of the pool");
@@ -218,14 +224,14 @@ namespace
         channel.io().response.addListener(replies);
         channel.io().event.addListener(events);
 
-        GameRequest unauth = makeRequest(id, COMMAND_MOVE, 7, 1, false);
+        GameRequest unauth = makeRequest(id, COMMAND_MOVE, 7, 1);
         check(!dispatcher.dispatch(unauth), "a session usecase is refused without a session");
         check(g_move_runs == 0, "and it did not run");
 
-        GameRequest unknown = makeRequest(id, COMMAND_UNKNOWN, 8, 2, true);
+        GameRequest unknown = makeRequest(id, COMMAND_UNKNOWN, 8, 2);
         check(!dispatcher.dispatch(unknown), "an unclaimed command is refused");
 
-        GameRequest ping = makeRequest(id, COMMAND_PING, 9, 3, false);
+        GameRequest ping = makeRequest(id, COMMAND_PING, 9, 3);
         check(dispatcher.dispatch(ping), "a public usecase runs without a session");
         check(g_ping_runs == 1 && g_last_sequence == 3, "and saw its state_sequence");
         check(replies.items.size() == 1 &&
@@ -238,7 +244,8 @@ namespace
               events.items[0].command == COMMAND_PING,
               "its event landed on the event stream");
 
-        GameRequest authed = makeRequest(id, COMMAND_MOVE, 10, 4, true);
+        GameRequest authed = makeRequest(id, COMMAND_MOVE, 10, 4);
+        check(sessions.find(id).isOk(), "the ping opened a session on the channel");
         check(dispatcher.dispatch(authed), "the session gate opens with a session");
         check(g_move_runs == 1, "and the session usecase ran");
 
@@ -246,7 +253,7 @@ namespace
         channels.remove(id);
         check(!channels.access(stale), "a removed channel cannot be reached");
 
-        GameRequest orphan = makeRequest(stale, COMMAND_PING, 11, 5, false);
+        GameRequest orphan = makeRequest(stale, COMMAND_PING, 11, 5);
         check(!dispatcher.dispatch(orphan), "a request for a gone channel is dropped");
         check(g_ping_runs == 1, "and its usecase did not run");
     }
@@ -259,18 +266,22 @@ namespace
 
     std::atomic<int> g_rejects(0);
 
-    // A ping stands in for a login here - enough to watch the session gate
-    // close and then open without dragging a session layer in. The codec is
-    // where an application turns bytes into a request, so the per-connection
-    // session flag lives beside it, keyed by channel slot.
-    class SessionCodec : public DefaultPacketCodec
+    struct DropOrphans : ISessionPolicy
+    {
+        uint32_t orphanLifetimeMs(const Session&) const override { return 0; }
+        bool     replacesPreviousLogin(const AccountId&) const override { return true; }
+    };
+
+    // A ping stands in for a login here: PingUsecase opens a session through
+    // the repository, so the gate is the real one. The codec only numbers the
+    // requests per channel so state_sequence can be checked on the wire.
+    class SequenceCodec : public DefaultPacketCodec
     {
     public:
         static const size_t MAX_CHANNELS = 4;
 
-        SessionCodec() :
-            _sequence(),
-            _authenticated()
+        SequenceCodec() :
+            _sequence()
         {
         }
 
@@ -286,19 +297,12 @@ namespace
                 return false;
             }
 
-            if (out.command == COMMAND_PING)
-            {
-                _authenticated[channel_id.index] = true;
-            }
-
             out.state_sequence = ++_sequence[channel_id.index];
-            out.authenticated  = _authenticated[channel_id.index];
             return true;
         }
 
     private:
         uint64_t _sequence[MAX_CHANNELS];
-        bool     _authenticated[MAX_CHANNELS];
     };
 
     // A real server would answer with an error packet or close; this harness
@@ -508,16 +512,20 @@ int main()
 
     BlockPool pool(defaultBlockClasses(), defaultBlockClassCount());
 
+    GameChannelPool   channels(4);
+    DropOrphans       policy;
+    SecureRandom      random;
+    SessionRepository sessions(channels, policy, random, 4);
+
     {
         std::vector<Holder<IUsecase> > clashing;
-        clashing.push_back(Holder<IUsecase>::make<PingUsecase>(pool));
-        clashing.push_back(Holder<IUsecase>::make<PingUsecase>(pool));
+        clashing.push_back(Holder<IUsecase>::make<PingUsecase>(pool, sessions));
+        clashing.push_back(Holder<IUsecase>::make<PingUsecase>(pool, sessions));
 
         UsecaseRegistry duplicated(std::move(clashing));
         check(!static_cast<bool>(duplicated), "a duplicate command is refused");
     }
-
-    UsecaseRegistry registry(makeUsecases(pool));
+    UsecaseRegistry   registry(makeUsecases(pool, sessions));
 
     check(static_cast<bool>(registry), "registry came up");
     check(registry.find(COMMAND_PING) != nullptr, "ping is registered");
@@ -525,7 +533,7 @@ int main()
     check(registry.find(COMMAND_UNKNOWN) == nullptr, "an unclaimed command finds nothing");
 
     std::printf("--- dispatcher, offline ---\n");
-    checkDispatcherOffline(registry);
+    checkDispatcherOffline(registry, channels, sessions);
 
     g_ping_runs     = 0;
     g_move_runs     = 0;
@@ -533,11 +541,10 @@ int main()
 
     std::printf("--- live ---\n");
 
-    GameChannelPool        channels(4);
-    UsecaseDispatcher      dispatcher(registry, channels);
+    UsecaseDispatcher      dispatcher(registry, channels, sessions);
     RejectCountingListener requests;
-    ChannelPoolBinder      binder(channels, requests);
-    SessionCodec           codec;
+    ChannelPoolBinder      binder(channels, sessions, requests);
+    SequenceCodec          codec;
 
     ConnectionTable connections(4, pool, 8, binder, codec);
     Endpoint        endpoint("127.0.0.1", 0, 16, connections);

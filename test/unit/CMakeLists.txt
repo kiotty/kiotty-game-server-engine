@@ -29,21 +29,27 @@ FetchContent_MakeAvailable(googletest)
 # Sources are listed, not globbed. A new .cpp that is not added here does not
 # compile at all, which is louder than a test that quietly never runs.
 add_executable(kiotty_unit_tests
+    implementation/kiotty_test_account_id.cpp
     implementation/kiotty_test_block_pool.cpp
     implementation/kiotty_test_bytes.cpp
     implementation/kiotty_test_channel_binder.cpp
     implementation/kiotty_test_channel_id.cpp
     implementation/kiotty_test_connection_info.cpp
+    implementation/kiotty_test_constant_time.cpp
+    implementation/kiotty_test_cryptor.cpp
+    implementation/kiotty_test_datasource.cpp
     implementation/kiotty_test_game_channel.cpp
     implementation/kiotty_test_game_channel_pool.cpp
     implementation/kiotty_test_holder.cpp
     implementation/kiotty_test_packet_codec.cpp
     implementation/kiotty_test_packet_concept.cpp
+    implementation/kiotty_test_password_hasher.cpp
     implementation/kiotty_test_receive_buffer.cpp
     implementation/kiotty_test_result.cpp
     implementation/kiotty_test_result_ref.cpp
     implementation/kiotty_test_ring_buffer.cpp
     implementation/kiotty_test_send_buffer.cpp
+    implementation/kiotty_test_session_repository.cpp
     implementation/kiotty_test_stream.cpp
     implementation/kiotty_test_usecase_dispatcher.cpp
 )

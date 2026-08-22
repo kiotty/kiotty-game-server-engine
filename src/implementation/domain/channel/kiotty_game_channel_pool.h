@@ -74,7 +74,7 @@ namespace kiotty
         struct Slot
         {
             typename std::aligned_storage<sizeof(GameChannel), alignof(GameChannel)>::type bytes;
-            uint32_t generation {0};
+            uint32_t generation {1};
             bool     live {false};
 
             GameChannel* channel() { return reinterpret_cast<GameChannel*>(&bytes); }

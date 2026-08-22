@@ -35,8 +35,6 @@ namespace kiotty
 
     Connection::~Connection()
     {
-        _channel.response.removeListener(_response_listener);
-        _channel.event.removeListener(_event_listener);
         _binder.onDisconnected(_info, _channel);
     }
 

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>학습 — AES-256-GCM</title>
+<style>
+:root
+{
+    --bg:        #ffffff;
+    --fg:        #1c1e21;
+    --muted:     #5c6570;
+    --line:      #d8dee6;
+    --box:       #f4f7fa;
+    --accent:    #1f6feb;
+    --accent-bg: #eaf2ff;
+    --warn:      #b06000;
+    --warn-bg:   #fff6e6;
+    --code-bg:   #f6f8fa;
+    --code-fg:   #24292f;
+}
+
+@media (prefers-color-scheme: dark)
+{
+    :root
+    {
+        --bg:        #14171a;
+        --fg:        #e6e9ec;
+        --muted:     #9aa4b0;
+        --line:      #2c3238;
+        --box:       #1d2126;
+        --accent:    #5b9dff;
+        --accent-bg: #16233a;
+        --warn:      #e0a45a;
+        --warn-bg:   #2a2116;
+        --code-bg:   #1a1e23;
+        --code-fg:   #d5dae0;
+    }
+}
+
+* { box-sizing: border-box; }
+
+body
+{
+    margin: 0 auto;
+    padding: 40px 24px 120px;
+    max-width: 980px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.75;
+    word-break: keep-all;
+}
+
+h1 { font-size: 30px; line-height: 1.35; margin: 0 0 6px; }
+h2 { font-size: 23px; margin: 56px 0 12px; padding-top: 18px; border-top: 2px solid var(--line); }
+h3 { font-size: 18px; margin: 32px 0 8px; }
+p  { margin: 10px 0; }
+ul, ol { margin: 10px 0; padding-left: 22px; }
+li { margin: 4px 0; }
+
+code
+{
+    font-family: "Cascadia Mono", "D2Coding", Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--code-bg);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
+
+pre
+{
+    background: var(--code-bg);
+    color: var(--code-fg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    line-height: 1.55;
+}
+
+pre code { background: none; padding: 0; font-size: 13.5px; }
+
+table
+{
+    border-collapse: collapse;
+    width: 100%;
+    margin: 14px 0;
+    font-size: 14.5px;
+    display: block;
+    overflow-x: auto;
+}
+
+th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+th { background: var(--box); white-space: nowrap; }
+
+.lead { color: var(--muted); font-size: 15px; margin: 0 0 28px; }
+
+.summary
+{
+    background: var(--accent-bg);
+    border-left: 4px solid var(--accent);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 14px 0 20px;
+}
+
+.summary p { margin: 0 0 6px; }
+.summary p:last-child { margin-bottom: 0; }
+
+.note
+{
+    background: var(--warn-bg);
+    border-left: 4px solid var(--warn);
+    padding: 12px 16px;
+    border-radius: 0 6px 6px 0;
+    margin: 16px 0;
+    font-size: 15px;
+}
+
+.q
+{
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    background: var(--box);
+}
+
+.q b { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>AES-256-GCM</h1>
+<p class="lead">이 엔진의 <code>Cryptor</code>(저장 데이터·보관 토큰의 양방향 암복호화)가 쓰는 방식. 이 문서만 읽고 끝낼 수 있게 썼다.</p>
+
+<div class="summary">
+<p><strong>AES</strong>는 16 byte 한 덩어리를 키로 뒤섞는 함수다. 그것만으로는 긴 데이터를 다룰 수 없다.</p>
+<p><strong>운용 모드</strong>는 16 byte 함수를 긴 데이터에 반복 적용하는 규칙이다. <strong>GCM</strong>은 그 규칙 중 하나로, 암호화하면서 <strong>변조 감지 태그</strong>를 같이 만든다.</p>
+<p>이 엔진에서 필요한 것은 셋이다 — 되돌릴 수 있을 것, 저장소가 새도 읽히지 않을 것, <strong>누가 바꿔치기했으면 알아챌 것</strong>. 마지막 하나 때문에 GCM이다.</p>
+</div>
+
+<h2>1. AES — 16 byte 를 뒤섞는 함수</h2>
+
+<p>AES는 입력 16 byte와 키(256 bit = 32 byte)를 받아 출력 16 byte를 내놓는 함수다. 키를 모르면 출력에서 입력을 되돌릴 수 없고, 키를 알면 정확히 되돌릴 수 있다.</p>
+
+<pre><code>encryptBlock(key, 16 byte 평문)  → 16 byte 암호문
+decryptBlock(key, 16 byte 암호문) → 16 byte 평문</code></pre>
+
+<p><strong>여기까지가 AES의 전부다.</strong> 16 byte 하나만 다룬다. "AES로 파일을 암호화한다"는 말은 이 함수를 어떤 규칙으로 반복 적용한다는 뜻이고, 그 규칙이 <em>모드</em>다.</p>
+
+<p>안에서 하는 일은 14라운드(256-bit 키 기준) 동안 같은 네 단계를 반복하는 것이다. 구현할 때 알면 되고, 쓰는 입장에서는 몰라도 된다.</p>
+
+<table>
+<tr><th>단계</th><th>하는 일</th></tr>
+<tr><td>SubBytes</td><td>바이트마다 고정된 표(S-box)로 치환</td></tr>
+<tr><td>ShiftRows</td><td>4×4 로 본 16 byte의 행을 옆으로 민다</td></tr>
+<tr><td>MixColumns</td><td>열마다 바이트를 섞는다</td></tr>
+<tr><td>AddRoundKey</td><td>키에서 뽑은 라운드 키와 XOR</td></tr>
+</table>
+
+<h2>2. 왜 모드가 필요한가 — 가장 단순한 방법이 틀리는 이유</h2>
+
+<p>제일 먼저 떠오르는 방법: 데이터를 16 byte씩 잘라 각각 <code>encryptBlock</code>. 이것을 ECB 모드라고 하는데, <strong>쓰면 안 된다.</strong> 같은 평문 블록은 항상 같은 암호문 블록이 되기 때문에, 암호문만 보고도 "여기와 저기가 같은 내용이다"를 알 수 있다. 이미지를 ECB로 암호화하면 윤곽이 그대로 보이는 유명한 예가 있다.</p>
+
+<p>그래서 제대로 된 모드는 <strong>같은 평문이라도 매번 다른 암호문</strong>이 나오게 만든다. 그 재료가 <strong>nonce</strong>(한 번만 쓰는 값)다. 암호화할 때마다 새 nonce를 뽑고, 그것을 암호문과 같이 보관한다. nonce는 비밀이 아니다 — 다만 <strong>같은 키로 두 번 쓰면 안 된다.</strong></p>
+
+<h2>3. CTR — GCM의 암호화 절반</h2>
+
+<p>GCM은 두 부분으로 되어 있다. 암호화는 <strong>CTR 모드</strong>, 변조 감지는 <strong>GHASH</strong>. 먼저 CTR.</p>
+
+<p>CTR은 평문을 AES에 넣지 않는다. <strong>카운터를 AES에 넣는다.</strong></p>
+
+<pre><code>nonce (12 byte) + 카운터 (4 byte) = 16 byte 블록
+
+keystream[0] = encryptBlock(key, nonce ‖ 2)
+keystream[1] = encryptBlock(key, nonce ‖ 3)
+keystream[2] = encryptBlock(key, nonce ‖ 4)
+...
+
+암호문 = 평문 XOR keystream</code></pre>
+
+<p>(카운터가 2부터 시작하는 이유는 §5에서 나온다. 1번은 태그용으로 남긴다.)</p>
+
+<p>이렇게 하면 얻는 것.</p>
+
+<ul>
+<li><strong>복호화가 암호화와 같은 코드다.</strong> 같은 keystream을 만들어 다시 XOR하면 평문이다. <code>decryptBlock</code>이 필요 없다.</li>
+<li><strong>길이 제한이 없다.</strong> 16 byte 배수가 아니어도 마지막 keystream의 남는 바이트만 버리면 된다. 패딩이 없다.</li>
+<li><strong>같은 평문도 nonce가 다르면 다른 암호문이다.</strong></li>
+</ul>
+
+<div class="note">
+<strong>nonce 재사용이 치명적인 이유가 여기서 보인다.</strong> 같은 키·같은 nonce면 keystream이 같다. 두 암호문을 XOR하면 keystream이 사라지고 <em>두 평문의 XOR</em>이 남는다. 그래서 nonce는 암호화할 때마다 <code>BCryptGenRandom</code> / <code>getrandom</code> 에서 12 byte를 새로 뽑는다.
+</div>
+
+<h2>4. 암호화만으로 부족한 이유 — 변조</h2>
+
+<p>CTR의 암호문은 <code>평문 XOR keystream</code>이다. 공격자가 키를 몰라도 <strong>암호문의 특정 비트를 뒤집으면 평문의 같은 자리 비트가 뒤집힌다.</strong> 잔액 필드가 어디 있는지 알면 값을 바꿀 수 있다. 읽지는 못해도 고칠 수는 있는 것이다.</p>
+
+<p>이 엔진에서 <code>Cryptor</code>가 지키는 것은 저장 데이터와 세션 토큰이다. 저장소가 통째로 새는 상황을 가정하는데, 그 상황에서 <em>읽히지 않는 것</em>만으로는 부족하고 <em>고쳐 써넣은 것을 알아채야</em> 한다. 그것이 태그다.</p>
+
+<h2>5. GHASH 와 태그 — GCM의 나머지 절반</h2>
+
+<p>암호화가 끝나면 암호문 전체를 한 번 더 훑어 16 byte 요약을 만든다. 이 요약이 <strong>태그</strong>이고, 암호문 뒤에 붙여 보관한다.</p>
+
+<pre><code>H    = encryptBlock(key, 0…0)                   ← 키에서만 나오는 비밀 상수
+X    = GHASH(H, 암호문, 길이)                    ← 암호문을 H 로 접어서 16 byte 로
+tag  = X XOR encryptBlock(key, nonce ‖ 1)        ← 카운터 1 번이 여기 쓰인다</code></pre>
+
+<p><code>GHASH</code>는 암호문을 16 byte씩 읽으며 <code>acc = (acc XOR block) · H</code> 를 반복한다. 여기서 <code>·</code>은 보통 곱셈이 아니라 <strong>GF(2<sup>128</sup>) 곱셈</strong>이다 — 128-bit 값을 다항식으로 보고 곱한 뒤 고정 다항식으로 나머지를 취하는 연산. 구현은 시프트와 XOR 뿐이라 30줄 안쪽이다.</p>
+
+<p>핵심은 <strong>H를 모르면 태그를 만들 수 없다</strong>는 것이다. 공격자가 암호문을 한 비트라도 바꾸면 GHASH 결과가 달라지고, 그 결과를 맞출 H가 없으니 태그를 고칠 수 없다.</p>
+
+<h3>복호화 절차</h3>
+
+<ol>
+<li>보관된 nonce·암호문·태그를 읽는다.</li>
+<li>암호문으로 태그를 <strong>다시 계산</strong>한다.</li>
+<li>계산한 태그와 보관된 태그를 비교한다. <strong>다르면 평문을 내놓지 않고 실패한다.</strong></li>
+<li>같으면 CTR로 복호화한다.</li>
+</ol>
+
+<p>3번 비교는 <strong>상수 시간</strong>으로 한다 — 첫 바이트에서 틀리든 마지막 바이트에서 틀리든 걸리는 시간이 같게. 앞에서부터 비교하다 멈추면 걸린 시간으로 "몇 바이트까지 맞췄는지"가 샌다.</p>
+
+<h2>6. 저장 형식</h2>
+
+<p><code>Cryptor::encrypt</code>가 돌려주는 바이트는 이 셋을 이어 붙인 것이다.</p>
+
+<pre><code>┌──────────┬──────────────────────┬──────────┐
+│ nonce 12 │ 암호문 (평문과 같은 길이) │ tag 16   │
+└──────────┴──────────────────────┴──────────┘</code></pre>
+
+<p>즉 암호문은 평문보다 항상 <strong>28 byte</strong> 길다. <code>decrypt</code>는 28 byte보다 짧은 입력을 그 자리에서 거부한다.</p>
+
+<h2>7. 알아 두어야 할 한계</h2>
+
+<table>
+<tr><th>한계</th><th>이 엔진에서의 의미</th></tr>
+<tr><td>nonce를 같은 키로 두 번 쓰면 깨진다</td><td>매번 OS 난수 12 byte. 같은 키로 2<sup>32</sup>번 넘게 쓰면 키를 바꾼다</td></tr>
+<tr><td>키가 새면 전부 새는 것이다</td><td>키는 <code>CipherKey</code> 값으로 서버 시작 시 주입. 저장소에 같이 두지 않는다</td></tr>
+<tr><td>직접 구현한 AES는 S-box 표 조회가 캐시 타이밍에 노출된다</td><td>외부에서 원격으로 측정하기 어려운 저장 데이터 용도라 수용. 네트워크 스트림 암호화(TLS)에는 이 구현을 쓰지 않는다</td></tr>
+<tr><td>태그 검증 전의 평문은 신뢰할 수 없다</td><td>그래서 <code>decrypt</code>는 태그부터 검사하고, 틀리면 평문을 만들지 않는다</td></tr>
+</table>
+
+<h2>8. 이 저장소에서 어떻게 쓰이는가</h2>
+
+<p>설계 문서(<code>docs/architecture.html</code> §6.11)가 정한 인터페이스다. 구현 파일은 이 문서를 이해한 뒤 만든다.</p>
+
+<pre><code>// 되돌려야 하는 것 전용 — 저장 데이터, 보관하는 토큰. AES-256.
+class Cryptor
+{
+public:
+    explicit Cryptor(const Key&amp; key);
+    ~Cryptor();
+
+    explicit operator bool() const;
+
+    Result&lt;ErrorCode, Bytes&gt; encrypt(ByteView plain) const;
+    Result&lt;ErrorCode, Bytes&gt; decrypt(ByteView cipher) const;
+};</code></pre>
+
+<p>위 문서의 <code>Key</code>는 이 저장소에서 <code>CipherKey</code>(32 byte POD)가 되고, <code>ErrorCode</code>는 영역별 enum 관례를 따라 <code>CryptoCode</code>가 된다. 반환값은 <code>core/kiotty_result.h</code>의 <code>Result</code>와 <code>core/kiotty_bytes.h</code>의 <code>Bytes</code>를 그대로 쓴다.</p>
+
+<pre><code>// src/implementation/core/kiotty_bytes.h — 입력은 ByteView, 출력은 Bytes
+class ByteView
+{
+public:
+    ByteView(const uint8_t* data, size_t size);
+    const uint8_t* data() const;
+    size_t size() const;
+    ...
+};
+
+class Bytes
+{
+public:
+    Bytes(BlockPool&amp; pool, size_t length);
+    ByteSpan writableSpan();
+    ByteView view() const;
+    ...
+};</code></pre>
+
+<p><code>Bytes</code>는 <code>BlockPool</code>에서만 만들어지므로 <code>Cryptor</code>는 생성자에서 <code>BlockPool&amp;</code>도 함께 받는다. 복호화가 태그 불일치로 실패하면 <code>Result</code>는 <code>CryptoCode::CRYPTO_TAG_MISMATCH</code>를 돌려주고 값은 만들어지지 않는다.</p>
+
+<div class="q">
+<b>스스로 확인해 볼 질문</b>
+<ol>
+<li>같은 평문을 두 번 <code>encrypt</code>하면 결과가 같은가? 왜인가?</li>
+<li>암호문 가운데 1 byte를 고친 뒤 <code>decrypt</code>하면 어떤 일이 일어나는가?</li>
+<li>출력이 평문보다 정확히 몇 byte 긴가? 그 바이트들은 각각 무엇인가?</li>
+<li><code>decryptBlock</code>(AES 역함수)이 이 구현에 필요한가?</li>
+</ol>
+</div>
+
+</body>
+</html>

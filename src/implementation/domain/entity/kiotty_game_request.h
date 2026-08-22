@@ -14,7 +14,6 @@ namespace kiotty
         ChannelId channel_id;
         uint32_t  correlation_id {0};
         uint16_t  command {0};
-        bool      authenticated {false};
         Bytes     payload;
     };
 }

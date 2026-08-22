@@ -183,7 +183,6 @@ TEST_F(Codec, DecodeCopiesEveryHeaderFieldToItsEntityField)
     EXPECT_EQ(0x11223344u, out.correlation_id);
     EXPECT_EQ(0x0102030405060708ull, out.state_sequence);
     EXPECT_EQ(channel_id, out.channel_id);
-    EXPECT_FALSE(out.authenticated);
     ASSERT_EQ(4u, out.payload.size());
     EXPECT_TRUE(hasPattern(out.payload.data(), 4));
 }
@@ -204,19 +203,6 @@ TEST_F(Codec, DecodeMovesThePayloadInsteadOfCopyingIt)
     EXPECT_EQ(original, out.payload.data());
     EXPECT_FALSE(static_cast<bool>(packet.payload));
     EXPECT_EQ(0u, packet.payload.size());
-}
-
-TEST_F(Codec, DecodeOverwritesAuthenticatedToFalse)
-{
-    DefaultPacketCodec codec;
-    ReceivedPacket     packet;
-    GameRequest        out;
-
-    // A reused GameRequest must not carry a previous request's session state.
-    out.authenticated = true;
-
-    ASSERT_TRUE(codec.decode(packet, ChannelId(), out));
-    EXPECT_FALSE(out.authenticated);
 }
 
 TEST_F(Codec, DecodeWithEmptyPayloadLeavesAnEmptyPayload)

@@ -11,6 +11,7 @@
 #include <domain/channel/kiotty_game_channel_pool.h>
 
 #include "support/kiotty_test_channel_listeners.h"
+#include "support/kiotty_test_session.h"
 
 #include <gtest/gtest.h>
 
@@ -26,6 +27,9 @@ using kiotty::GameRequest;
 using kiotty::IoChannelResult;
 using kiotty::IoGameChannel;
 using kiotty::makeConnectionInfo;
+using kiotty::SessionRepository;
+using kiotty_test::CounterRandom;
+using kiotty_test::FixedPolicy;
 using kiotty_test::RequestListener;
 
 namespace
@@ -41,7 +45,10 @@ TEST(ChannelPoolBinder, OnConnectedCreatesAChannelInThePool)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
 
@@ -57,7 +64,10 @@ TEST(ChannelPoolBinder, OnConnectedAttachesTheRequestListenerToTheNewChannel)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
     ASSERT_TRUE(bound.isOk());
@@ -76,7 +86,10 @@ TEST(ChannelPoolBinder, OnConnectedReturnsTheViewOfTheChannelItCreated)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
     ASSERT_TRUE(bound.isOk());
@@ -101,7 +114,10 @@ TEST(ChannelPoolBinder, EachOnConnectedGetsItsOwnChannelWithTheSameListener)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult first  = binder.onConnected(kInfo);
     IoChannelResult second = binder.onConnected(kInfo);
@@ -122,7 +138,10 @@ TEST(ChannelPoolBinder, OnConnectedOnAFullPoolReturnsPoolExhausted)
 {
     GameChannelPool   pool(1);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult first  = binder.onConnected(kInfo);
     IoChannelResult second = binder.onConnected(kInfo);
@@ -137,7 +156,10 @@ TEST(ChannelPoolBinder, OnConnectedOnACapacityZeroPoolReturnsPoolExhausted)
 {
     GameChannelPool   pool(0);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
 
@@ -154,7 +176,10 @@ TEST(ChannelPoolBinder, OnDisconnectedRemovesTheChannelFromThePool)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
     ASSERT_TRUE(bound.isOk());
@@ -176,7 +201,10 @@ TEST(ChannelPoolBinder, OnDisconnectedTwiceWithTheSameViewIsHarmless)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult bound = binder.onConnected(kInfo);
     ASSERT_TRUE(bound.isOk());
@@ -191,7 +219,10 @@ TEST(ChannelPoolBinder, OnDisconnectedLeavesOtherChannelsAlone)
 {
     GameChannelPool   pool(4);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult first  = binder.onConnected(kInfo);
     IoChannelResult second = binder.onConnected(kInfo);
@@ -214,7 +245,10 @@ TEST(ChannelPoolBinder, ReconnectAfterDisconnectReusesTheSlotWithANewGeneration)
 {
     GameChannelPool   pool(1);
     RequestListener   listener;
-    ChannelPoolBinder binder(pool, listener);
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
 
     IoChannelResult first = binder.onConnected(kInfo);
     ASSERT_TRUE(first.isOk());
@@ -237,4 +271,227 @@ TEST(ChannelPoolBinder, ReconnectAfterDisconnectReusesTheSlotWithANewGeneration)
     GameRequest request;
     EXPECT_TRUE(second.value().request.emit(request));
     EXPECT_EQ(1, listener.calls);
+}
+
+// -----------------------------------------------------------------------------
+// onDisconnected and the session repository
+// -----------------------------------------------------------------------------
+//
+// The binder is the only place that tells the repository a channel went away.
+// What happens to the session is the policy's decision, so both answers are
+// checked: drop at once, or keep an orphan that a reconnect can pick up.
+
+using kiotty_test::accountOf;
+using kiotty::SessionCode;
+using kiotty::SessionResult;
+
+TEST(ChannelPoolBinder, OnDisconnectedWithZeroOrphanLifetimeDropsTheSession)
+{
+    GameChannelPool   pool(4);
+    RequestListener   listener;
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
+
+    policy.orphan_lifetime_ms = 0;
+
+    IoChannelResult bound = binder.onConnected(kInfo);
+    ASSERT_TRUE(bound.isOk());
+    const ChannelId id = bound.value().channel_id;
+
+    SessionResult opened = sessions.open(id, accountOf("alice"));
+    ASSERT_TRUE(opened.isOk());
+    ASSERT_EQ(1u, sessions.size());
+
+    binder.onDisconnected(kInfo, bound.value());
+
+    EXPECT_EQ(0u, sessions.size());
+    EXPECT_EQ(SessionCode::SESSION_NOT_FOUND, sessions.find(id).code());
+
+    IoChannelResult next = binder.onConnected(kInfo);
+    ASSERT_TRUE(next.isOk());
+    EXPECT_EQ(SessionCode::SESSION_UNAVAILABLE,
+              sessions.rebind(next.value().channel_id, opened.value().token()).code());
+}
+
+TEST(ChannelPoolBinder, OnDisconnectedWithAnOrphanLifetimeKeepsTheSessionForRebind)
+{
+    GameChannelPool   pool(4);
+    RequestListener   listener;
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
+
+    policy.orphan_lifetime_ms = 1000;
+
+    IoChannelResult bound = binder.onConnected(kInfo);
+    ASSERT_TRUE(bound.isOk());
+    const ChannelId old_id = bound.value().channel_id;
+
+    SessionResult opened = sessions.open(old_id, accountOf("alice"));
+    ASSERT_TRUE(opened.isOk());
+
+    binder.onDisconnected(kInfo, bound.value());
+
+    // Orphaned: still counted, not reachable through the dead channel.
+    EXPECT_EQ(1u, sessions.size());
+    EXPECT_EQ(SessionCode::SESSION_NOT_FOUND, sessions.find(old_id).code());
+
+    IoChannelResult next = binder.onConnected(kInfo);
+    ASSERT_TRUE(next.isOk());
+    const ChannelId new_id = next.value().channel_id;
+
+    SessionResult rebound = sessions.rebind(new_id, opened.value().token());
+    ASSERT_TRUE(rebound.isOk());
+    EXPECT_EQ(new_id, rebound.value().channel());
+    EXPECT_EQ(accountOf("alice"), rebound.value().account());
+    EXPECT_TRUE(sessions.find(new_id).isOk());
+    EXPECT_EQ(1u, sessions.size());
+}
+
+namespace
+{
+    // A policy that, from inside the callback, looks at the session it is
+    // being asked about: what channel does it claim, is that channel still in
+    // the pool, and can it still send. The repository must not be holding its
+    // lock while this runs, or the first question deadlocks.
+    class ProbingPolicy : public kiotty::ISessionPolicy
+    {
+    public:
+        explicit ProbingPolicy(GameChannelPool& pool) :
+            _pool(pool),
+            calls(0),
+            channel_seen(),
+            channel_was_live(false),
+            reply_result(false),
+            rebind_to(),
+            rebind_target(nullptr),
+            rebind_ok(false)
+        {
+        }
+
+        uint32_t orphanLifetimeMs(const kiotty::Session& session) const override
+        {
+            ++calls;
+            channel_seen     = session.channel();
+            channel_was_live = static_cast<bool>(_pool.access(channel_seen));
+
+            kiotty::Session copy = session;
+            reply_result = copy.reply(1, 1, kiotty::Bytes());
+
+            if (rebind_target != nullptr)
+            {
+                rebind_ok = rebind_target->rebind(rebind_to, session.token()).isOk();
+            }
+            return 1000;
+        }
+
+        bool replacesPreviousLogin(const kiotty::AccountId&) const override { return true; }
+
+        GameChannelPool&   _pool;
+        mutable int        calls;
+        mutable ChannelId  channel_seen;
+        mutable bool       channel_was_live;
+        mutable bool       reply_result;
+        ChannelId          rebind_to;
+        SessionRepository* rebind_target;
+        mutable bool       rebind_ok;
+    };
+}
+
+TEST(ChannelPoolBinder, OnDisconnectedDetachesBeforeRemovingSoThePolicySeesALiveChannel)
+{
+    GameChannelPool   pool(4);
+    RequestListener   listener;
+    CounterRandom     random;
+    ProbingPolicy     policy(pool);
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
+
+    IoChannelResult bound = binder.onConnected(kInfo);
+    ASSERT_TRUE(bound.isOk());
+    const ChannelId id = bound.value().channel_id;
+    ASSERT_TRUE(sessions.open(id, accountOf("alice")).isOk());
+
+    binder.onDisconnected(kInfo, bound.value());
+
+    ASSERT_EQ(1, policy.calls);
+    EXPECT_EQ(id, policy.channel_seen);
+    EXPECT_TRUE(policy.channel_was_live);
+    // The binder clears the io listeners before detaching, so the emit has
+    // nobody to reach and reply() reports false; the channel being live is
+    // the observation that matters here.
+    EXPECT_FALSE(policy.reply_result);
+
+    EXPECT_EQ(0u, pool.size());
+    EXPECT_EQ(1u, sessions.size());   // lifetime 1000: left as an orphan
+    EXPECT_EQ(SessionCode::SESSION_NOT_FOUND, sessions.find(id).code());
+}
+
+TEST(ChannelPoolBinder, RebindDuringThePolicyCallbackWinsOverTheDetach)
+{
+    // The session moves to another channel while the policy is deciding; the
+    // detach that started this must not orphan it from its new channel.
+    GameChannelPool   pool(4);
+    RequestListener   listener;
+    CounterRandom     random;
+    ProbingPolicy     policy(pool);
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
+
+    IoChannelResult first  = binder.onConnected(kInfo);
+    IoChannelResult second = binder.onConnected(kInfo);
+    ASSERT_TRUE(first.isOk());
+    ASSERT_TRUE(second.isOk());
+    const ChannelId old_id = first.value().channel_id;
+    const ChannelId new_id = second.value().channel_id;
+
+    kiotty::SessionResult opened = sessions.open(old_id, accountOf("alice"));
+    ASSERT_TRUE(opened.isOk());
+
+    policy.rebind_target = &sessions;
+    policy.rebind_to     = new_id;
+
+    binder.onDisconnected(kInfo, first.value());
+
+    ASSERT_EQ(1, policy.calls);
+    EXPECT_TRUE(policy.rebind_ok);
+
+    // Still attached, on the new channel, and not counted as an orphan.
+    EXPECT_EQ(1u, sessions.size());
+    kiotty::SessionResult found = sessions.find(new_id);
+    ASSERT_TRUE(found.isOk());
+    EXPECT_EQ(opened.value().token(), found.value().token());
+    EXPECT_EQ(new_id, opened.value().channel());
+    EXPECT_EQ(SessionCode::SESSION_NOT_FOUND, sessions.find(old_id).code());
+
+    // No orphan clock was started: a far-future sweep leaves it alone.
+    sessions.sweep(1000000);
+    EXPECT_EQ(1u, sessions.size());
+    EXPECT_TRUE(sessions.find(new_id).isOk());
+}
+
+TEST(ChannelPoolBinder, OnDisconnectedOfAChannelWithoutASessionLeavesOtherSessionsAlone)
+{
+    GameChannelPool   pool(4);
+    RequestListener   listener;
+    CounterRandom     random;
+    FixedPolicy       policy;
+    SessionRepository sessions(pool, policy, random, 4);
+    ChannelPoolBinder binder(pool, sessions, listener);
+
+    IoChannelResult first  = binder.onConnected(kInfo);
+    IoChannelResult second = binder.onConnected(kInfo);
+    ASSERT_TRUE(first.isOk());
+    ASSERT_TRUE(second.isOk());
+
+    const ChannelId kept = second.value().channel_id;
+    ASSERT_TRUE(sessions.open(kept, accountOf("alice")).isOk());
+
+    binder.onDisconnected(kInfo, first.value());
+
+    EXPECT_EQ(1u, sessions.size());
+    EXPECT_TRUE(sessions.find(kept).isOk());
 }
